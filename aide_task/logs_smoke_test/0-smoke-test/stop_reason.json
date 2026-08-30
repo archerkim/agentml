@@ -1,0 +1,6 @@
+{
+  "stop_reason": "step cap 3 reached",
+  "best_valid_metric": 0.13386,
+  "total_steps": 3,
+  "elapsed_sec": 124.8
+}

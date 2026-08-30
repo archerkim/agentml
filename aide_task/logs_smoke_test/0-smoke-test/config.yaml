@@ -1,0 +1,60 @@
+data_dir: !!python/object/apply:pathlib.PosixPath
+- /
+- Users
+- archerkim
+- .pyenv
+- versions
+- 3.10.19
+- lib
+- python3.10
+- site-packages
+- aide
+- example_tasks
+- house_prices
+desc_file: null
+goal: Predict the sales price for each house.
+eval: RMSE between log-prices.
+log_dir: !!python/object/apply:pathlib.PosixPath
+- /
+- Users
+- archerkim
+- Downloads
+- kuairand-starter-kit 2
+- aide_task
+- logs_smoke_test
+- 0-smoke-test
+workspace_dir: !!python/object/apply:pathlib.PosixPath
+- /
+- Users
+- archerkim
+- Downloads
+- kuairand-starter-kit 2
+- aide_task
+- workspaces_smoke_test
+- 0-smoke-test
+preprocess_data: true
+copy_data: true
+exp_name: 0-smoke-test
+exec:
+  timeout: 120
+  agent_file_name: runfile.py
+  format_tb_ipython: false
+generate_report: true
+report:
+  model: gemini-3.5-flash-lite
+  temp: 1.0
+agent:
+  steps: 3
+  k_fold_validation: 1
+  expose_prediction: false
+  data_preview: true
+  code:
+    model: gemini-3.6-flash
+    temp: 0.5
+  feedback:
+    model: gemini-3.5-flash-lite
+    temp: 0.5
+  search:
+    max_debug_depth: 2
+    debug_prob: 0.5
+    num_drafts: 1

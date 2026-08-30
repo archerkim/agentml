@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="en"> 
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script
+      id="p5scripttag"
+      src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"
+      integrity="sha512-uaz5GpnQoE6t5echKlX8P52czvsIGgLPcvlzfvRubLZ1Hp8JemUDnbUiAahbVtPb+jUVrNETuXvAhDDF/N3M4w=="
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer"
+    ></script>
+
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"
+    />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+
+    <script>
+      const bgCol = "#F2F0E7";
+const accentCol = "#fd4578";
+
+hljs.initHighlightingOnLoad();
+
+const updateTargetDims = () => {
+  // width is max-width of `.contentContainer` - its padding
+  // return [min(windowWidth, 900 - 80), 700]
+  return [windowWidth * (1 / 2), windowHeight];
+};
+
+const setCodeAndPlan = (code, plan) => {
+  const codeElm = document.getElementById("code");
+  if (codeElm) {
+    // codeElm.innerText = code;
+    codeElm.innerHTML = hljs.highlight(code, { language: "python" }).value;
+  }
+
+  const planElm = document.getElementById("plan");
+  if (planElm) {
+    // planElm.innerText = plan.trim();
+    planElm.innerHTML = hljs.highlight(plan, { language: "plaintext" }).value;
+  }
+};
+
+windowResized = () => {
+  resizeCanvas(...updateTargetDims());
+  awaitingPostResizeOps = true;
+};
+
+const animEase = (t) => 1 - (1 - Math.min(t, 1.0)) ** 5;
+
+// ---- global constants ----
+
+const globalAnimSpeed = 1.1;
+const scaleFactor = 0.57;
+
+// ---- global vars ----
+
+let globalTime = 0;
+let manualSelection = false;
+
+let currentElemInd = 0;
+
+let treeStructData = {"edges": [[0, 1], [1, 2]], "layout": [[0.5, 0.0], [0.5, 0.5], [0.5, 1.0]], "plan": ["To predict house sale prices, we first transform the target variable `SalePrice`\nusing a natural logarithm to align directly with the competition's Root Mean\nSquared Error on log-transformed prices. We perform feature engineering by\ncreating domain-specific aggregate features such as total square footage, total\nbathroom count, house age, remodel age, and total porch square footage.\nNumerical missing values are imputed using medians, while categorical variables\nare filled with a missing indicator and converted to categorical dtypes suitable\nfor gradient boosted trees. A LightGBM regressor is evaluated using 5-fold\ncross-validation, and out-of-fold validation RMSE is recorded on the log scale.\nFinally, test predictions across all folds are averaged, transformed back to\noriginal monetary scale via exponentiation, and saved to `submission.csv`.", "To resolve the `OSError` caused by missing `libomp` C++ library dependencies in\nLightGBM, we replace `LGBMRegressor` with scikit-learn's\n`HistGradientBoostingRegressor`, which provides comparable histogram-based\ngradient boosting directly within standard Python dependencies. Categorical\ncolumns are processed with scikit-learn's `OrdinalEncoder`, while missing values\nin numerical columns are imputed using median values. We retain the domain\nfeature engineering (calculating overall square footage, total bathroom count,\nhouse/remodel age, and total porch square footage) and 5-fold cross-validation\nscheme. Finally, predictions are generated for the test set, evaluated log RMSE\nis printed, and submission output is written to `./working/submission.csv`.", "To improve model generalization and capture both linear and non-linear\nrelationships in the data, we build a multi-model ensemble combining\n`HistGradientBoostingRegressor`, `ExtraTreesRegressor`, and `Ridge` regression.\nWe transform highly skewed numerical features using `log1p` to improve linear\nmodel stability and create separate pipeline encodings (one-hot encoding for\n`Ridge` and ordinal encoding for tree models). All three models are fitted\nwithin the 5-fold cross-validation scheme to generate out-of-fold predictions.\nFinally, we optimize blending weights via constrained optimization to produce\nthe final ensembled predictions."], "code": ["import os\nimport numpy as np\nimport pandas as pd\nfrom lightgbm import LGBMRegressor\nfrom sklearn.metrics import mean_squared_error\nfrom sklearn.model_selection import KFold\n\n# Load data\ntrain_df = pd.read_csv(\"./input/train.csv\")\ntest_df = pd.read_csv(\"./input/test.csv\")\n\n# Separate target and IDs\ntrain_id = train_df[\"Id\"]\ntest_id = test_df[\"Id\"]\ny_train_log = np.log1p(train_df[\"SalePrice\"])\n\n# Drop target and Id from features\nX_train = train_df.drop(columns=[\"Id\", \"SalePrice\"])\nX_test = test_df.drop(columns=[\"Id\"])\n\n# Combine train and test for consistent preprocessing\ndf_all = pd.concat([X_train, X_test], axis=0, ignore_index=True)\n\n# Domain feature engineering\ndf_all[\"TotalSF\"] = (\n    df_all[\"TotalBsmtSF\"].fillna(0)\n    + df_all[\"1stFlrSF\"].fillna(0)\n    + df_all[\"2ndFlrSF\"].fillna(0)\n)\ndf_all[\"TotalBath\"] = (\n    df_all[\"FullBath\"].fillna(0)\n    + 0.5 * df_all[\"HalfBath\"].fillna(0)\n    + df_all[\"BsmtFullBath\"].fillna(0)\n    + 0.5 * df_all[\"BsmtHalfBath\"].fillna(0)\n)\ndf_all[\"HouseAge\"] = df_all[\"YrSold\"] - df_all[\"YearBuilt\"]\ndf_all[\"RemodelAge\"] = df_all[\"YrSold\"] - df_all[\"YearRemodAdd\"]\ndf_all[\"TotalPorchSF\"] = (\n    df_all[\"OpenPorchSF\"].fillna(0)\n    + df_all[\"3SsnPorch\"].fillna(0)\n    + df_all[\"EnclosedPorch\"].fillna(0)\n    + df_all[\"ScreenPorch\"].fillna(0)\n    + df_all[\"WoodDeckSF\"].fillna(0)\n)\n\n# Identify numerical and categorical columns\nnum_cols = df_all.select_dtypes(include=[np.number]).columns\ncat_cols = df_all.select_dtypes(include=[\"object\", \"category\"]).columns\n\n# Fill missing values\nfor col in num_cols:\n    df_all[col] = df_all[col].fillna(df_all[col].median())\n\nfor col in cat_cols:\n    df_all[col] = df_all[col].fillna(\"Missing\").astype(\"category\")\n\n# Split back into train and test sets\nX_train_processed = df_all.iloc[: len(train_df)].copy()\nX_test_processed = df_all.iloc[len(train_df) :].copy()\n\n# 5-Fold Cross Validation\nkf = KFold(n_splits=5, shuffle=True, random_state=42)\noof_preds = np.zeros(len(X_train_processed))\ntest_preds = np.zeros(len(X_test_processed))\n\nfor fold, (train_idx, val_idx) in enumerate(kf.split(X_train_processed, y_train_log)):\n    X_tr, y_tr = X_train_processed.iloc[train_idx], y_train_log.iloc[train_idx]\n    X_va, y_va = X_train_processed.iloc[val_idx], y_train_log.iloc[val_idx]\n\n    model = LGBMRegressor(\n        n_estimators=600,\n        learning_rate=0.03,\n        num_leaves=31,\n        random_state=42,\n        verbosity=-1,\n    )\n\n    model.fit(X_tr, y_tr)\n\n    oof_preds[val_idx] = model.predict(X_va)\n    test_preds += model.predict(X_test_processed) / kf.n_splits\n\n# Compute CV RMSE on log scale\ncv_rmse = np.sqrt(mean_squared_error(y_train_log, oof_preds))\nprint(f\"Validation Log RMSE: {cv_rmse:.5f}\")\n\n# Prepare submission file\nsub = pd.DataFrame({\"Id\": test_id, \"SalePrice\": np.expm1(test_preds)})\n\nos.makedirs(\"./working\", exist_ok=True)\nsub.to_csv(\"./working/submission.csv\", index=False)", "import os\nimport numpy as np\nimport pandas as pd\nfrom sklearn.ensemble import HistGradientBoostingRegressor\nfrom sklearn.metrics import mean_squared_error\nfrom sklearn.model_selection import KFold\nfrom sklearn.preprocessing import OrdinalEncoder\n\n# Load data\ntrain_df = pd.read_csv(\"./input/train.csv\")\ntest_df = pd.read_csv(\"./input/test.csv\")\n\n# Separate target and IDs\ntrain_id = train_df[\"Id\"]\ntest_id = test_df[\"Id\"]\ny_train_log = np.log1p(train_df[\"SalePrice\"])\n\n# Drop target and Id from features\nX_train = train_df.drop(columns=[\"Id\", \"SalePrice\"])\nX_test = test_df.drop(columns=[\"Id\"])\n\n# Combine train and test for consistent preprocessing\ndf_all = pd.concat([X_train, X_test], axis=0, ignore_index=True)\n\n# Domain feature engineering\ndf_all[\"TotalSF\"] = (\n    df_all[\"TotalBsmtSF\"].fillna(0)\n    + df_all[\"1stFlrSF\"].fillna(0)\n    + df_all[\"2ndFlrSF\"].fillna(0)\n)\ndf_all[\"TotalBath\"] = (\n    df_all[\"FullBath\"].fillna(0)\n    + 0.5 * df_all[\"HalfBath\"].fillna(0)\n    + df_all[\"BsmtFullBath\"].fillna(0)\n    + 0.5 * df_all[\"BsmtHalfBath\"].fillna(0)\n)\ndf_all[\"HouseAge\"] = df_all[\"YrSold\"] - df_all[\"YearBuilt\"]\ndf_all[\"RemodelAge\"] = df_all[\"YrSold\"] - df_all[\"YearRemodAdd\"]\ndf_all[\"TotalPorchSF\"] = (\n    df_all[\"OpenPorchSF\"].fillna(0)\n    + df_all[\"3SsnPorch\"].fillna(0)\n    + df_all[\"EnclosedPorch\"].fillna(0)\n    + df_all[\"ScreenPorch\"].fillna(0)\n    + df_all[\"WoodDeckSF\"].fillna(0)\n)\n\n# Identify numerical and categorical columns\ncat_cols = df_all.select_dtypes(include=[\"object\", \"category\"]).columns.tolist()\nnum_cols = df_all.select_dtypes(include=[np.number]).columns.tolist()\n\n# Preprocess categorical features using OrdinalEncoder\nencoder = OrdinalEncoder(handle_unknown=\"use_encoded_value\", unknown_value=-1)\ndf_all[cat_cols] = encoder.fit_transform(df_all[cat_cols].fillna(\"Missing\").astype(str))\n\n# Fill missing values in numerical columns\nfor col in num_cols:\n    df_all[col] = df_all[col].fillna(df_all[col].median())\n\n# Split back into train and test sets\nX_train_processed = df_all.iloc[: len(train_df)].copy()\nX_test_processed = df_all.iloc[len(train_df) :].copy()\n\n# 5-Fold Cross Validation\nkf = KFold(n_splits=5, shuffle=True, random_state=42)\noof_preds = np.zeros(len(X_train_processed))\ntest_preds = np.zeros(len(X_test_processed))\n\nfor fold, (train_idx, val_idx) in enumerate(kf.split(X_train_processed, y_train_log)):\n    X_tr, y_tr = X_train_processed.iloc[train_idx], y_train_log.iloc[train_idx]\n    X_va, y_va = X_train_processed.iloc[val_idx], y_train_log.iloc[val_idx]\n\n    model = HistGradientBoostingRegressor(\n        max_iter=600,\n        learning_rate=0.03,\n        max_leaf_nodes=31,\n        random_state=42,\n    )\n\n    model.fit(X_tr, y_tr)\n\n    oof_preds[val_idx] = model.predict(X_va)\n    test_preds += model.predict(X_test_processed) / kf.n_splits\n\n# Compute CV RMSE on log scale\ncv_rmse = np.sqrt(mean_squared_error(y_train_log, oof_preds))\nprint(f\"Validation Log RMSE: {cv_rmse:.5f}\")\n\n# Prepare submission file\nsub = pd.DataFrame({\"Id\": test_id, \"SalePrice\": np.expm1(test_preds)})\n\nos.makedirs(\"./working\", exist_ok=True)\nsub.to_csv(\"./working/submission.csv\", index=False)", "import os\nimport numpy as np\nimport pandas as pd\nfrom scipy.optimize import minimize\nfrom sklearn.ensemble import ExtraTreesRegressor, HistGradientBoostingRegressor\nfrom sklearn.linear_model import Ridge\nfrom sklearn.metrics import mean_squared_error\nfrom sklearn.model_selection import KFold\nfrom sklearn.preprocessing import OrdinalEncoder, StandardScaler\n\n# Load data\ntrain_df = pd.read_csv(\"./input/train.csv\")\ntest_df = pd.read_csv(\"./input/test.csv\")\n\n# Separate target and IDs\ntrain_id = train_df[\"Id\"]\ntest_id = test_df[\"Id\"]\ny_train_log = np.log1p(train_df[\"SalePrice\"])\n\n# Drop target and Id from features\nX_train = train_df.drop(columns=[\"Id\", \"SalePrice\"])\nX_test = test_df.drop(columns=[\"Id\"])\n\n# Combine train and test for consistent preprocessing\ndf_all = pd.concat([X_train, X_test], axis=0, ignore_index=True)\n\n# Domain feature engineering\ndf_all[\"TotalSF\"] = (\n    df_all[\"TotalBsmtSF\"].fillna(0)\n    + df_all[\"1stFlrSF\"].fillna(0)\n    + df_all[\"2ndFlrSF\"].fillna(0)\n)\ndf_all[\"TotalBath\"] = (\n    df_all[\"FullBath\"].fillna(0)\n    + 0.5 * df_all[\"HalfBath\"].fillna(0)\n    + df_all[\"BsmtFullBath\"].fillna(0)\n    + 0.5 * df_all[\"BsmtHalfBath\"].fillna(0)\n)\ndf_all[\"HouseAge\"] = df_all[\"YrSold\"] - df_all[\"YearBuilt\"]\ndf_all[\"RemodelAge\"] = df_all[\"YrSold\"] - df_all[\"YearRemodAdd\"]\ndf_all[\"TotalPorchSF\"] = (\n    df_all[\"OpenPorchSF\"].fillna(0)\n    + df_all[\"3SsnPorch\"].fillna(0)\n    + df_all[\"EnclosedPorch\"].fillna(0)\n    + df_all[\"ScreenPorch\"].fillna(0)\n    + df_all[\"WoodDeckSF\"].fillna(0)\n)\n\n# Identify feature types\ncat_cols = df_all.select_dtypes(include=[\"object\", \"category\"]).columns.tolist()\nnum_cols = df_all.select_dtypes(include=[np.number]).columns.tolist()\n\n# Fill missing numerical values and log transform skewed features\nfor col in num_cols:\n    df_all[col] = df_all[col].fillna(df_all[col].median())\n    if df_all[col].skew() > 0.75:\n        df_all[col] = np.log1p(np.maximum(0, df_all[col]))\n\n# Ordinal encoding for tree-based models\ndf_trees = df_all.copy()\nencoder = OrdinalEncoder(handle_unknown=\"use_encoded_value\", unknown_value=-1)\ndf_trees[cat_cols] = encoder.fit_transform(\n    df_trees[cat_cols].fillna(\"Missing\").astype(str)\n)\n\n# One-hot encoding for linear models\ndf_linear = pd.get_dummies(df_all, columns=cat_cols, drop_first=True)\n\n# Split datasets\nX_train_tree = df_trees.iloc[: len(train_df)].copy()\nX_test_tree = df_trees.iloc[len(train_df) :].copy()\n\nX_train_lin = df_linear.iloc[: len(train_df)].copy()\nX_test_lin = df_linear.iloc[len(train_df) :].copy()\n\n# 5-Fold Cross Validation setup\nkf = KFold(n_splits=5, shuffle=True, random_state=42)\n\noof_hgb = np.zeros(len(X_train))\noof_et = np.zeros(len(X_train))\noof_ridge = np.zeros(len(X_train))\n\ntest_hgb = np.zeros(len(X_test))\ntest_et = np.zeros(len(X_test))\ntest_ridge = np.zeros(len(X_test))\n\nfor fold, (train_idx, val_idx) in enumerate(kf.split(X_train_tree, y_train_log)):\n    # Tree features train/val\n    X_tr_t, y_tr = X_train_tree.iloc[train_idx], y_train_log.iloc[train_idx]\n    X_va_t, y_va = X_train_tree.iloc[val_idx], y_train_log.iloc[val_idx]\n\n    # Model 1: HistGradientBoosting\n    hgb = HistGradientBoostingRegressor(\n        max_iter=600, learning_rate=0.03, max_leaf_nodes=31, random_state=42\n    )\n    hgb.fit(X_tr_t, y_tr)\n    oof_hgb[val_idx] = hgb.predict(X_va_t)\n    test_hgb += hgb.predict(X_test_tree) / kf.n_splits\n\n    # Model 2: ExtraTreesRegressor\n    et = ExtraTreesRegressor(n_estimators=200, random_state=42, n_jobs=-1)\n    et.fit(X_tr_t, y_tr)\n    oof_et[val_idx] = et.predict(X_va_t)\n    test_et += et.predict(X_test_tree) / kf.n_splits\n\n    # Linear features train/val\n    X_tr_l = X_train_lin.iloc[train_idx]\n    X_va_l = X_train_lin.iloc[val_idx]\n\n    scaler = StandardScaler()\n    X_tr_l_scaled = scaler.fit_transform(X_tr_l)\n    X_va_l_scaled = scaler.transform(X_va_l)\n    X_test_l_scaled = scaler.transform(X_test_lin)\n\n    # Model 3: Ridge\n    ridge = Ridge(alpha=15.0, random_state=42)\n    ridge.fit(X_tr_l_scaled, y_tr)\n    oof_ridge[val_idx] = ridge.predict(X_va_l_scaled)\n    test_ridge += ridge.predict(X_test_l_scaled) / kf.n_splits\n\n\n# Optimize ensemble weights on OOF predictions\ndef objective(weights):\n    w1, w2, w3 = weights\n    pred = w1 * oof_hgb + w2 * oof_et + w3 * oof_ridge\n    return np.sqrt(mean_squared_error(y_train_log, pred))\n\n\nres = minimize(\n    objective,\n    [0.5, 0.25, 0.25],\n    bounds=[(0, 1), (0, 1), (0, 1)],\n    constraints={\"type\": \"eq\", \"fun\": lambda w: 1 - sum(w)},\n)\nweights = res.x\n\noof_blend = weights[0] * oof_hgb + weights[1] * oof_et + weights[2] * oof_ridge\ncv_rmse = np.sqrt(mean_squared_error(y_train_log, oof_blend))\nprint(f\"Validation Log RMSE: {cv_rmse:.5f}\")\n\n# Prepare submission file\ntest_blend = weights[0] * test_hgb + weights[1] * test_et + weights[2] * test_ridge\nsub = pd.DataFrame({\"Id\": test_id, \"SalePrice\": np.expm1(test_blend)})\n\nos.makedirs(\"./working\", exist_ok=True)\nsub.to_csv(\"./working/submission.csv\", index=False)"], "term_out": ["Traceback (most recent call last):\n  File \"runfile.py\", line 4, in <module>\n    from lightgbm import LGBMRegressor\n  File \"/Users/archerkim/.pyenv/versions/3.10.19/lib/python3.10/site-packages/lightgbm/__init__.py\", line 11, in <module>\n    from .basic import Booster, Dataset, EvalResult, Sequence, register_logger\n  File \"/Users/archerkim/.pyenv/versions/3.10.19/lib/python3.10/site-packages/lightgbm/basic.py\", line 9, in <module>\n    from .libpath import _LIB  # isort: skip\n  File \"/Users/archerkim/.pyenv/versions/3.10.19/lib/python3.10/site-packages/lightgbm/libpath.py\", line 49, in <module>\n    _LIB = ctypes.cdll.LoadLibrary(_find_lib_path()[0])\n  File \"/Users/archerkim/.pyenv/versions/3.10.19/lib/python3.10/ctypes/__init__.py\", line 452, in LoadLibrary\n    return self._dlltype(name)\n  File \"/Users/archerkim/.pyenv/versions/3.10.19/lib/python3.10/ctypes/__init__.py\", line 374, in __init__\n    self._handle = _dlopen(self._name, mode)\nOSError: dlopen(/Users/archerkim/.pyenv/versions/3.10.19/lib/python3.10/site-packages/lightgbm/lib/lib_lightgbm.dylib, 0x0006): Library not loaded: @rpath/libomp.dylib\n  Referenced from: <59CCDAC2-EBAE-32F7-ADF4-469B834532C9> /Users/archerkim/.pyenv/versions/3.10.19/lib/python3.10/site-packages/lightgbm/lib/lib_lightgbm.dylib\n  Reason: tried: '/opt/homebrew/opt/libomp/lib/libomp.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/opt/homebrew/opt/libomp/lib/libomp.dylib' (no such file), '/opt/local/lib/libomp/libomp.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/opt/local/lib/libomp/libomp.dylib' (no such file), '/opt/homebrew/opt/libomp/lib/libomp.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/opt/homebrew/opt/libomp/lib/libomp.dylib' (no such file), '/opt/local/lib/libomp/libomp.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/opt/local/lib/libomp/libomp.dylib' (no such file), '/Users/archerkim/.pyenv/versions/3.10.19/lib/libomp.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/Users/archerkim/.pyenv/versions/3.10.19/lib/libomp.dylib' (no such file), '/opt/homebrew/lib/libomp.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/opt/homebrew/lib/libomp.dylib' (no such file), '/Users/archerkim/.pyenv/versions/3.10.19/lib/libomp.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/Users/archerkim/.pyenv/versions/3.10.19/lib/libomp.dylib' (no such file), '/opt/homebrew/lib/libomp.dylib' (no such file), '/System/Volumes/Preboot/Cryptexes/OS/opt/homebrew/lib/libomp.dylib' (no such file)\nExecution time: a moment seconds (time limit is 2 minutes).", "Validation Log RMSE: 0.13386\nExecution time: 31 seconds seconds (time limit is 2 minutes).", "Validation Log RMSE: 0.12750\nExecution time: 15 seconds seconds (time limit is 2 minutes)."], "analysis": ["The execution failed with an OSError because the LightGBM library could not be loaded on macOS due to a missing OpenMP dependency (`libomp.dylib`). This environment-specific issue can be resolved by installing libomp via Homebrew (`brew install libomp`).", "The script executed successfully without any bugs within the time limit. Using a HistGradientBoostingRegressor with standard feature engineering and 5-fold cross-validation yielded a robust Validation Log RMSE of 0.13386.", "The code executed successfully within the time limit and produced a solid validation RMSE of 0.12750 using an optimized ensemble of HistGradientBoosting, ExtraTrees, and Ridge regression models."], "exp_name": "0-smoke-test", "metrics": [0, 0, 0]}
+
+let lastClick = 0;
+let firstFrameTime = undefined;
+
+let nodes = [];
+let edges = [];
+
+let lastScrollPos = 0;
+
+setup = () => {
+  canvas = createCanvas(...updateTargetDims());
+};
+
+class Node {
+  x;
+  y;
+  size;
+  xT;
+  yT;
+  xB;
+  yB;
+  treeInd;
+  color;
+  relSize;
+  animationStart = Number.MAX_VALUE;
+  animationProgress = 0;
+  isStatic = false;
+  hasChildren = false;
+  isRootNode = true;
+  isStarred = false;
+  selected = false;
+  renderSize = 10;
+  edges = [];
+  bgCol;
+
+  constructor(x, y, relSize, treeInd) {
+    const minSize = 35;
+    const maxSize = 60;
+
+    const maxColor = 10;
+    const minColor = 125;
+
+    this.relSize = relSize;
+    this.treeInd = treeInd;
+    this.size = minSize + (maxSize - minSize) * relSize;
+    this.color = minColor + (maxColor - minColor) * relSize;
+    this.bgCol = Math.round(Math.max(this.color / 2, 0));
+
+    this.x = x;
+    this.y = y;
+    this.xT = x;
+    this.yT = y - this.size / 2;
+    this.xB = x;
+    this.yB = y + this.size / 2;
+
+    nodes.push(this);
+  }
+
+  startAnimation = (offset = 0) => {
+    if (this.animationStart == Number.MAX_VALUE)
+      this.animationStart = globalTime + offset;
+  };
+
+  child = (node) => {
+    let edge = new Edge(this, node);
+    this.edges.push(edge);
+    edges.push(edge);
+    this.hasChildren = true;
+    node.isRootNode = false;
+    return node;
+  };
+
+  render = () => {
+    if (globalTime - this.animationStart < 0) return;
+
+    const mouseXlocalCoords = (mouseX - width / 2) / scaleFactor;
+    const mouseYlocalCoords = (mouseY - height / 2) / scaleFactor;
+    const isMouseOver =
+      dist(mouseXlocalCoords, mouseYlocalCoords, this.x, this.y) <
+      this.renderSize / 1.5;
+    if (isMouseOver) cursor(HAND);
+    if (isMouseOver && mouseIsPressed) {
+      nodes.forEach((n) => (n.selected = false));
+      this.selected = true;
+      setCodeAndPlan(
+        treeStructData.code[this.treeInd],
+        treeStructData.plan[this.treeInd],
+      );
+      manualSelection = true;
+    }
+
+    this.renderSize = this.size;
+    if (!this.isStatic) {
+      this.animationProgress = animEase(
+        (globalTime - this.animationStart) / 1000,
+      );
+      if (this.animationProgress >= 1) {
+        this.isStatic = true;
+      } else {
+        this.renderSize =
+          this.size *
+          (0.8 +
+            0.2 *
+              (-3.33 * this.animationProgress ** 2 +
+                4.33 * this.animationProgress));
+      }
+    }
+
+    fill(this.color);
+    if (this.selected) {
+      fill(accentCol);
+    }
+
+    noStroke();
+    square(
+      this.x - this.renderSize / 2,
+      this.y - this.renderSize / 2,
+      this.renderSize,
+      10,
+    );
+
+    noStroke();
+    textAlign(CENTER, CENTER);
+    textSize(this.renderSize / 2);
+    fill(255);
+    // fill(lerpColor(color(accentCol), color(255), this.animationProgress))
+    text("{ }", this.x, this.y - 1);
+    // DEBUG PRINT:
+    // text(round(this.relSize, 2), this.x, this.y - 1)
+    // text(this.treeInd, this.x, this.y + 15)
+
+    const dotAnimThreshold = 0.85;
+    if (this.isStarred && this.animationProgress >= dotAnimThreshold) {
+      let dotAnimProgress =
+        (this.animationProgress - dotAnimThreshold) / (1 - dotAnimThreshold);
+      textSize(
+        ((-3.33 * dotAnimProgress ** 2 + 4.33 * dotAnimProgress) *
+          this.renderSize) /
+          2,
+      );
+      if (this.selected) {
+        fill(0);
+        stroke(0);
+      } else {
+        fill(accentCol);
+        stroke(accentCol);
+      }
+      strokeWeight((-(dotAnimProgress ** 2) + dotAnimProgress) * 2);
+      text("*", this.x + 20, this.y - 11);
+      noStroke();
+    }
+
+    if (!this.isStatic) {
+      fill(bgCol);
+      const progressAnimBaseSize = this.renderSize + 5;
+      rect(
+        this.x - progressAnimBaseSize / 2,
+        this.y -
+          progressAnimBaseSize / 2 +
+          progressAnimBaseSize * this.animationProgress,
+        progressAnimBaseSize,
+        progressAnimBaseSize * (1 - this.animationProgress),
+      );
+    }
+    if (this.animationProgress >= 0.9) {
+      this.edges
+        .sort((a, b) => a.color() - b.color())
+        .forEach((e, i) => {
+          e.startAnimation((i / this.edges.length) ** 2 * 1000);
+        });
+    }
+  };
+}
+
+class Edge {
+  nodeT;
+  nodeB;
+  animX = 0;
+  animY = 0;
+  animationStart = Number.MAX_VALUE;
+  animationProgress = 0;
+  isStatic = false;
+  weight = 0;
+
+  constructor(nodeT, nodeB) {
+    this.nodeT = nodeT;
+    this.nodeB = nodeB;
+    this.weight = 2 + nodeB.relSize * 1;
+  }
+
+  color = () => this.nodeB.color;
+
+  startAnimation = (offset = 0) => {
+    if (this.animationStart == Number.MAX_VALUE)
+      this.animationStart = globalTime + offset;
+  };
+
+  render = () => {
+    if (globalTime - this.animationStart < 0) return;
+
+    if (!this.isStatic) {
+      this.animationProgress = animEase(
+        (globalTime - this.animationStart) / 1000,
+      );
+      if (this.animationProgress >= 1) {
+        this.isStatic = true;
+        this.animX = this.nodeB.xT;
+        this.animY = this.nodeB.yT;
+      } else {
+        this.animX = bezierPoint(
+          this.nodeT.xB,
+          this.nodeT.xB,
+          this.nodeB.xT,
+          this.nodeB.xT,
+          this.animationProgress,
+        );
+
+        this.animY = bezierPoint(
+          this.nodeT.yB,
+          (this.nodeT.yB + this.nodeB.yT) / 2,
+          (this.nodeT.yB + this.nodeB.yT) / 2,
+          this.nodeB.yT,
+          this.animationProgress,
+        );
+      }
+    }
+    if (this.animationProgress >= 0.97) {
+      this.nodeB.startAnimation();
+    }
+
+    strokeWeight(this.weight);
+    noFill();
+    stroke(
+      lerpColor(color(bgCol), color(accentCol), this.nodeB.relSize * 1 + 0.7),
+    );
+    bezier(
+      this.nodeT.xB,
+      this.nodeT.yB,
+      this.nodeT.xB,
+      (this.nodeT.yB + this.nodeB.yT) / 2,
+      this.animX,
+      (this.nodeT.yB + this.nodeB.yT) / 2,
+      this.animX,
+      this.animY,
+    );
+  };
+}
+
+draw = () => {
+  cursor(ARROW);
+  frameRate(120);
+  if (!firstFrameTime && frameCount <= 1) {
+    firstFrameTime = millis();
+  }
+  // ---- update global animation state ----
+  const initialSpeedScalingEaseIO =
+    (cos(min((millis() - firstFrameTime) / 8000, 1.0) * PI) + 1) / 2;
+  const initialSpeedScalingEase =
+    (cos(min((millis() - firstFrameTime) / 8000, 1.0) ** (1 / 2) * PI) + 1) / 2;
+  const initAnimationSpeedFactor = 1.0 - 0.4 * initialSpeedScalingEaseIO;
+  // update global scaling-aware clock
+  globalTime += globalAnimSpeed * initAnimationSpeedFactor * deltaTime;
+
+  if (nodes.length == 0) {
+    const spacingHeight = height * 1.3;
+    const spacingWidth = width * 1.3;
+    treeStructData.layout.forEach((lay, index) => {
+      new Node(
+        spacingWidth * lay[0] - spacingWidth / 2,
+        20 + spacingHeight * lay[1] - spacingHeight / 2,
+        1 - treeStructData.metrics[index],
+        index,
+      );
+    });
+    treeStructData.edges.forEach((ind) => {
+      nodes[ind[0]].child(nodes[ind[1]]);
+    });
+    nodes.forEach((n) => {
+      if (n.isRootNode) n.startAnimation();
+    });
+    nodes[0].selected = true;
+    setCodeAndPlan(
+      treeStructData.code[0],
+      treeStructData.plan[0],
+    )
+  }
+
+  const staticNodes = nodes.filter(
+    (n) => n.isStatic || n.animationProgress >= 0.7,
+  );
+  if (staticNodes.length > 0) {
+    const largestNode = staticNodes.reduce((prev, current) =>
+      prev.relSize > current.relSize ? prev : current,
+    );
+    if (!manualSelection) {
+      if (!largestNode.selected) {
+        setCodeAndPlan(
+          treeStructData.code[largestNode.treeInd],
+          treeStructData.plan[largestNode.treeInd],
+        );
+      }
+      staticNodes.forEach((node) => {
+        node.selected = node === largestNode;
+      });
+    }
+  }
+  background(bgCol);
+  // global animation transforms
+  translate(width / 2, height / 2);
+  scale(scaleFactor);
+
+  
+  // ---- fg render ----
+  edges.forEach((e) => e.render());
+  nodes.forEach((n) => n.render());
+  
+};
+
+    </script>
+    <title>AIDE Run Visualization</title>
+    <style>
+      body,
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+        overflow: scroll;
+      }
+      body {
+        background-color: #f2f0e7;
+      }
+      canvas {
+        float: left;
+        height: 100vh;
+        width: 40vw;
+      }
+      #text-container {
+        float: right;
+        height: 100vh;
+        width: 50vw;
+        background-color: #282c34;
+      }
+      #plan {
+        /* border-left: 2px solid #282c34; */
+        background-color: #282c34;
+        color: #f2f0e7;
+        min-height: 5rem;
+        padding: 1em 0 1em 1em;
+      }
+    </style>
+  </head>
+  <body>
+    <pre
+      id="text-container"
+    ><div id="plan"></div><hr><code id="code" class="language-python"></code></pre>
+  </body>
+</html>

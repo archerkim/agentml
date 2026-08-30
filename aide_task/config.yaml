@@ -1,0 +1,91 @@
+# AIDE config для KuaiRand-Pure.
+# Схема сверена с локально установленным pip-пакетом aideml==0.2.2
+# (aide/utils/config.py: AgentConfig) - у GitHub main есть поля (напр. metric_maximize),
+# которых в этой версии на PyPI ещё нет; ориентируйтесь на установленную версию, не на main.
+#
+# LLM-провайдер: NVIDIA (build.nvidia.com), модель nvidia/nemotron-3-ultra-550b-a55b.
+# aideml==0.2.2 распознаёт провайдера только по паттернам "gpt-"/"o<N>"/"codex-",
+# "claude-", "gemini-" (aide/backend/__init__.py:determine_provider) -
+# "nvidia/nemotron-3-ultra-550b-a55b" ни под один не попадает, поэтому провайдер падает
+# в ветку "если задан OPENAI_BASE_URL - используем backend_openai.py по обычному Chat
+# Completions API". run_with_early_stop.py сам выставляет
+# OPENAI_BASE_URL=https://integrate.api.nvidia.com/v1 при старте - здесь никакого поля
+# под base_url нет и не нужно.
+#
+# (Раньше пробовали Z.ai напрямую - не было баланса; затем OpenRouter'овский
+# z-ai/glm-5.2:free - упёрлись в общий бесплатный пул, устойчивый 429 upstream.
+# Ключи от обоих оставлены закомментированными в .env на случай отката.)
+#
+# Единственное, что нужно сделать перед запуском - вставить ключ в aide_task/.env
+# (плейсхолдер OPENAI_API_KEY=...). run_with_early_stop.py сам подхватывает .env и
+# экспортирует ключ в окружение при старте.
+
+data_dir: ./data
+desc_file: ./description.md
+# goal/eval - альтернатива desc_file (см. house_prices пример). Мы используем desc_file,
+# но load_task_desc() в aideml==0.2.2 всё равно ЧИТАЕТ cfg.goal/cfg.eval (просто чтобы
+# решить, печатать ли warning про "ignoring goal/eval") - без явного null они остаются
+# MISSING в структурированном OmegaConf-конфиге и падают с MissingMandatoryValue при
+# первом же обращении. Явный null - обязателен, если используете desc_file.
+goal: null
+eval: null
+
+log_dir: logs
+workspace_dir: workspaces
+
+# файлы уже подготовлены prepare_data.py (train/valid/test с вырезанными outcome-
+# колонками) - архивов внутри нет, распаковывать нечего
+preprocess_data: False
+# копировать, не симлинкать - чтобы агент не мог случайно испортить мастер-копию
+# data_dir (единственную маскированную версию, которая у нас есть)
+copy_data: True
+
+exp_name: kuairand-pure-run1
+
+exec:
+  # хард-кап на ОДНО выполнение кода агента. Референсный FM baseline тренируется
+  # ~17с/итерация на одном ядре; 900с даёт ~50x запас на более тяжёлые кандидаты
+  # (sequence-модели, multi-seed оценка внутри одного запуска и т.п.), не давая
+  # одному зависшему кандидату съесть весь бюджет прогона.
+  timeout: 900
+  agent_file_name: runfile.py
+  format_tb_ipython: False
+
+generate_report: True
+report:
+  model: nvidia/nemotron-3-ultra-550b-a55b
+  temp: 1.0
+
+agent:
+  # = 50-iteration cap из спеки соревнования - жёсткий верхний потолок.
+  # Реальный ранний останов по плато (ε=0.002/N=3) и wall-clock ceiling (6ч)
+  # реализованы отдельно в run_with_early_stop.py - запускайте через него,
+  # а не через нативный `aide ...`, если хотите, чтобы прогон останавливался
+  # раньше 50 шагов при выходе на плато.
+  steps: 50   # жёсткий потолок итераций из спеки соревнования
+
+  # у нас фиксированный date-based train/valid/test, а не k-fold CV - не давать
+  # AIDE самому придумывать свой CV поверх train.csv
+  k_fold_validation: 1
+
+  # финальное решение должно уметь применяться к test.csv и производить submission.csv
+  # (см. "Формат финального сабмита" в description.md) - это и есть designated final
+  expose_prediction: True
+
+  data_preview: True
+
+  code:
+    model: nvidia/nemotron-3-ultra-550b-a55b   # по запросу пользователя, через build.nvidia.com
+    temp: 0.5
+
+  feedback:
+    model: nvidia/nemotron-3-ultra-550b-a55b   # дешёвая/быстрая - только классификация traceback'ов
+    temp: 0.5
+
+  search:
+    max_debug_depth: 3
+    debug_prob: 0.5
+    num_drafts: 5    # увеличено для теста ensemble-механизма: нужно несколько НЕЗАВИСИМЫХ
+                     # (разных lineage) кандидатов, следующих новому требованию сохранять
+                     # valid_scores.npy/test_scores.npy, иначе select_diverse_topk найдёт
+                     # <2 подходящих и ensemble-шаг просто пропустится

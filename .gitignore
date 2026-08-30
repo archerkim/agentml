@@ -1,0 +1,21 @@
+# secrets
+.env
+aide_task/.env
+*.env
+!*.env.example
+
+# python
+__pycache__/
+*.pyc
+
+# large duplicated run artifacts / dataset copies
+aide_task/data/
+aide_task/logs/
+aide_task/workspaces/
+aide_task/verify_stack/
+
+# broken external symlink
+KuaiRand-Pure
+
+# local Claude Code session state
+.claude/
