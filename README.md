@@ -13,7 +13,7 @@ It has two complementary entry points:
 
 | Model / selection rule | Validation primary | Held-out primary |
 |---|---:|---:|
-| Official FM baseline | — | 0.5946 |
+| Official FM baseline | 0.6015 | 0.5946 |
 | Causal-history FM, selected from an early run | 0.6036 | 0.5966 |
 | Best validation-selected causal-history FM | **0.6048** | 0.5978 |
 | Best retained held-out candidate | 0.6043 | **0.5981** |
