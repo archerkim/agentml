@@ -1,0 +1,86 @@
+Ollama maximum-reasoning proxy listening on http://127.0.0.1:11435/v1 -> http://127.0.0.1:11434 (reasoning_effort=medium, upstream timeout 5400s)
+[16:43:22] 127.0.0.1 - "GET /_health HTTP/1.1" 200 -
+[16:43:22] 127.0.0.1 - "GET /_health HTTP/1.1" 200 -
+[16:43:51] -> chat/completions model=aide-qwen3.8:27b prompt_chars=27809 (reasoning_effort=medium)
+[16:44:22] <- 32s finish=tool_calls prompt_tokens=8566 completion_tokens=1046 reasoning_chars=3370 content_chars=0
+[16:44:22] 127.0.0.1 - "POST /v1/chat/completions HTTP/1.1" 200 -
+[16:44:25] -> chat/completions model=aide-qwen3.8:27b prompt_chars=28827 (reasoning_effort=medium)
+[16:47:09] <- 164s finish=stop prompt_tokens=7816 completion_tokens=9423 reasoning_chars=22095 content_chars=11564
+[16:47:09] 127.0.0.1 - "POST /v1/chat/completions HTTP/1.1" 200 -
+[16:47:16] -> chat/completions model=aide-qwen3.8:27b prompt_chars=33245 (reasoning_effort=medium)
+[16:47:42] <- 26s finish=tool_calls prompt_tokens=9625 completion_tokens=727 reasoning_chars=1901 content_chars=0
+[16:47:42] 127.0.0.1 - "POST /v1/chat/completions HTTP/1.1" 200 -
+[16:48:08] -> chat/completions model=aide-qwen3.8:27b prompt_chars=28827 (reasoning_effort=medium)
+[16:50:43] <- 155s finish=stop prompt_tokens=7816 completion_tokens=8693 reasoning_chars=20277 content_chars=11669
+[16:50:43] 127.0.0.1 - "POST /v1/chat/completions HTTP/1.1" 200 -
+[17:02:51] -> chat/completions model=aide-qwen3.8:27b prompt_chars=33869 (reasoning_effort=medium)
+[17:03:20] <- 30s finish=tool_calls prompt_tokens=9937 completion_tokens=692 reasoning_chars=1667 content_chars=0
+[17:03:20] 127.0.0.1 - "POST /v1/chat/completions HTTP/1.1" 200 -
+[17:03:20] -> chat/completions model=aide-qwen3.8:27b prompt_chars=30144 (reasoning_effort=medium)
+[17:06:00] <- 159s finish=stop prompt_tokens=8175 completion_tokens=9063 reasoning_chars=22587 content_chars=9658
+[17:06:00] 127.0.0.1 - "POST /v1/chat/completions HTTP/1.1" 200 -
+[17:06:05] -> chat/completions model=aide-qwen3.8:27b prompt_chars=31107 (reasoning_effort=medium)
+[17:06:35] <- 30s finish=tool_calls prompt_tokens=9198 completion_tokens=935 reasoning_chars=2870 content_chars=0
+[17:06:35] 127.0.0.1 - "POST /v1/chat/completions HTTP/1.1" 200 -
+[17:06:35] -> chat/completions model=aide-qwen3.8:27b prompt_chars=30144 (reasoning_effort=medium)
+[17:08:54] <- 139s finish=stop prompt_tokens=8175 completion_tokens=6962 reasoning_chars=10639 content_chars=14844
+[17:08:54] 127.0.0.1 - "POST /v1/chat/completions HTTP/1.1" 200 -
+[17:08:56] -> chat/completions model=aide-qwen3.8:27b prompt_chars=36450 (reasoning_effort=medium)
+[17:09:20] <- 23s finish=tool_calls prompt_tokens=10647 completion_tokens=623 reasoning_chars=1400 content_chars=0
+[17:09:20] 127.0.0.1 - "POST /v1/chat/completions HTTP/1.1" 200 -
+[17:09:20] -> chat/completions model=aide-qwen3.8:27b prompt_chars=39161 (reasoning_effort=medium)
+[17:10:34] <- 75s finish=stop prompt_tokens=10880 completion_tokens=4226 reasoning_chars=1765 content_chars=13274
+[17:10:34] 127.0.0.1 - "POST /v1/chat/completions HTTP/1.1" 200 -
+[17:11:46] -> chat/completions model=aide-qwen3.8:27b prompt_chars=35130 (reasoning_effort=medium)
+[17:12:11] <- 25s finish=tool_calls prompt_tokens=10095 completion_tokens=751 reasoning_chars=2019 content_chars=0
+[17:12:11] 127.0.0.1 - "POST /v1/chat/completions HTTP/1.1" 200 -
+[17:12:11] -> chat/completions model=aide-qwen3.8:27b prompt_chars=37023 (reasoning_effort=medium)
+[17:13:59] <- 108s finish=stop prompt_tokens=10453 completion_tokens=5793 reasoning_chars=8737 content_chars=12502
+[17:13:59] 127.0.0.1 - "POST /v1/chat/completions HTTP/1.1" 200 -
+[17:17:25] -> chat/completions model=aide-qwen3.8:27b prompt_chars=34201 (reasoning_effort=medium)
+[17:17:58] <- 34s finish=tool_calls prompt_tokens=10159 completion_tokens=1233 reasoning_chars=3339 content_chars=0
+[17:17:58] 127.0.0.1 - "POST /v1/chat/completions HTTP/1.1" 200 -
+[17:17:58] -> chat/completions model=aide-qwen3.8:27b prompt_chars=32314 (reasoning_effort=medium)
+[17:19:53] <- 115s finish=stop prompt_tokens=8901 completion_tokens=5976 reasoning_chars=10875 content_chars=10305
+[17:19:53] 127.0.0.1 - "POST /v1/chat/completions HTTP/1.1" 200 -
+[17:20:13] -> chat/completions model=aide-qwen3.8:27b prompt_chars=29838 (reasoning_effort=medium)
+[17:20:33] <- 20s finish=tool_calls prompt_tokens=8953 completion_tokens=538 reasoning_chars=947 content_chars=0
+[17:20:33] 127.0.0.1 - "POST /v1/chat/completions HTTP/1.1" 200 -
+[17:34:04] -> chat/completions model=aide-qwen3.8:27b prompt_chars=48529 (reasoning_effort=medium)
+[17:34:40] <- 36s finish=tool_calls prompt_tokens=14361 completion_tokens=720 reasoning_chars=1718 content_chars=0
+[17:34:40] 127.0.0.1 - "POST /v1/chat/completions HTTP/1.1" 200 -
+[19:41:27] 127.0.0.1 - "GET /_health HTTP/1.1" 200 -
+[19:41:27] 127.0.0.1 - "GET /_health HTTP/1.1" 200 -
+[19:41:55] -> chat/completions model=aide-qwen3.8:27b prompt_chars=27783 (reasoning_effort=medium)
+[19:42:29] <- 34s finish=tool_calls prompt_tokens=8557 completion_tokens=943 reasoning_chars=2766 content_chars=0
+[19:42:29] 127.0.0.1 - "POST /v1/chat/completions HTTP/1.1" 200 -
+[19:42:31] -> chat/completions model=aide-qwen3.8:27b prompt_chars=29445 (reasoning_effort=medium)
+[19:43:31] <- 59s finish=stop prompt_tokens=8207 completion_tokens=3055 reasoning_chars=4731 content_chars=5829
+[19:43:31] 127.0.0.1 - "POST /v1/chat/completions HTTP/1.1" 200 -
+[19:43:31] -> chat/completions model=aide-qwen3.8:27b prompt_chars=29445 (reasoning_effort=medium)
+[19:44:14] <- 43s finish=stop prompt_tokens=8207 completion_tokens=2772 reasoning_chars=4127 content_chars=5328
+[19:44:14] 127.0.0.1 - "POST /v1/chat/completions HTTP/1.1" 200 -
+[19:45:14] -> chat/completions model=aide-qwen3.8:27b prompt_chars=30704 (reasoning_effort=medium)
+[19:45:36] <- 22s finish=tool_calls prompt_tokens=9878 completion_tokens=581 reasoning_chars=1397 content_chars=0
+[19:45:36] 127.0.0.1 - "POST /v1/chat/completions HTTP/1.1" 200 -
+[19:46:36] -> chat/completions model=aide-qwen3.8:27b prompt_chars=31854 (reasoning_effort=medium)
+[19:47:31] <- 55s finish=stop prompt_tokens=8850 completion_tokens=2497 reasoning_chars=7045 content_chars=2623
+[19:47:31] 127.0.0.1 - "POST /v1/chat/completions HTTP/1.1" 200 -
+[19:48:40] -> chat/completions model=aide-qwen3.8:27b prompt_chars=31241 (reasoning_effort=medium)
+[19:49:06] <- 26s finish=tool_calls prompt_tokens=10029 completion_tokens=833 reasoning_chars=2350 content_chars=0
+[19:49:06] 127.0.0.1 - "POST /v1/chat/completions HTTP/1.1" 200 -
+[19:49:06] -> chat/completions model=aide-qwen3.8:27b prompt_chars=33588 (reasoning_effort=medium)
+[19:49:45] <- 38s finish=stop prompt_tokens=9303 completion_tokens=1450 reasoning_chars=4128 content_chars=1626
+[19:49:45] 127.0.0.1 - "POST /v1/chat/completions HTTP/1.1" 200 -
+[19:50:53] -> chat/completions model=aide-qwen3.8:27b prompt_chars=31343 (reasoning_effort=medium)
+[19:51:26] <- 33s finish=tool_calls prompt_tokens=10057 completion_tokens=1099 reasoning_chars=3141 content_chars=0
+[19:51:26] 127.0.0.1 - "POST /v1/chat/completions HTTP/1.1" 200 -
+[19:51:26] -> chat/completions model=aide-qwen3.8:27b prompt_chars=35166 (reasoning_effort=medium)
+[19:52:20] <- 54s finish=stop prompt_tokens=9677 completion_tokens=2192 reasoning_chars=7403 content_chars=1344
+[19:52:20] 127.0.0.1 - "POST /v1/chat/completions HTTP/1.1" 200 -
+[19:53:28] -> chat/completions model=aide-qwen3.8:27b prompt_chars=31235 (reasoning_effort=medium)
+[19:53:52] <- 24s finish=tool_calls prompt_tokens=10027 completion_tokens=713 reasoning_chars=1767 content_chars=0
+[19:53:52] 127.0.0.1 - "POST /v1/chat/completions HTTP/1.1" 200 -
+[19:53:53] -> chat/completions model=aide-qwen3.8:27b prompt_chars=64153 (reasoning_effort=medium)
+[19:55:11] <- 78s finish=stop prompt_tokens=19128 completion_tokens=2744 reasoning_chars=1424 content_chars=8107
+[19:55:11] 127.0.0.1 - "POST /v1/chat/completions HTTP/1.1" 200 -

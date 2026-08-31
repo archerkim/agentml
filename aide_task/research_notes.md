@@ -42,3 +42,49 @@ MMoE, weights tuned on valid.csv only. [AutoGluon-Tabular paper](https://arxiv.o
   with multi-stage verification; Agent Laboratory's literature-review -> hypothesis ->
   implementation -> refinement loop) - relevant to the HARNESS's own architecture, not the
   model itself. [Survey of LLM-based Scientific Agents](https://arxiv.org/pdf/2503.24047)
+
+---
+
+## Update (2026-08-31) — literature checked against this campaign's directives
+
+Same honest caveat as above: this was researched by the orchestrating assistant with web
+search, not autonomously by the harness. The harness injects this file; it cannot write it.
+
+**Watch time is the wrong thing to regress directly, and the literature says why.**
+The watch-time label is "highly imbalanced with most impressions corresponding to short
+views or quick skips, producing a distribution that is both long-tailed and multi-peaked"
+(DADF, 2026). That is a precise explanation of the dead end already recorded here —
+censored watch-time regression used *directly* as the ranking score scored test 0.5516.
+Current work does not regress the conditional mean at all: CQE (Kuaishou Technology)
+models the whole conditional distribution via quantile regression, and Generative
+Regression (WWW 2026, A/B tested on the Kuaishou app) treats watch time as a sequence to
+generate rather than a scalar to fit. Implication for directive 05: keep watch time as an
+*auxiliary* head shaping a shared representation, and if predicting it, predict a quantile
+or a bucket rather than a mean.
+
+**long_view is a distribution-shifted label, by construction.** The KuaiRand paper's own
+setup notes that the training label is derived from a transformation of watch time and
+duration, while the *test* label is the user-interest indicator `long_view`. That is
+directly relevant to why duration-related features behave oddly here, and supports
+`dur_bucket` interactions being worth more attention than raw duration.
+
+**Sequence features: short-term browsing is only one of three families.** Industrial
+systems distinguish (a) short-term browsing sequences, (b) *item-dependent* long-term
+behaviour retrieved with respect to the target item, and (c) compressed lifelong interest
+representations. Everything tried in this project so far is family (a) — the last K items,
+target-independent. Family (b) is target-aware retrieval (which past interactions resemble
+*this* candidate video) and is untried here. Relevant to directive 01.
+
+**Measured here, 2026-08-31 — history features are REDUNDANT, not additive.** The merge
+step combined run 10's two best history features (last-3-positive-videos, 0.6027, and
+prev_author, 0.6034, both branching off prev_video at 0.6036) into one candidate carrying
+both. Result: **0.6026** — no better than last-3-videos alone, and below prev_video alone.
+Stacking more target-independent recency fields onto FM does not compound. This is a
+concrete, tested reason to move to target-aware history (family b) or to a different model
+family rather than adding a 4th and 5th history field.
+
+Sources: [DADF](https://arxiv.org/html/2605.17863v1),
+[CQE](https://arxiv.org/html/2407.12223v4),
+[Generative Regression for watch time](https://arxiv.org/html/2412.20211v3),
+[KuaiRand](https://arxiv.org/abs/2208.08696),
+[Moment&Cross (Kuaishou)](https://arxiv.org/pdf/2408.05709)

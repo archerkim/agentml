@@ -1,0 +1,11 @@
+campaign: 5 runs, 3600s each (max 5.0h), effort=medium
+  - 02-ranking-loss-plus-history     improve_mode=rewrite
+  - 03-deepfm-architecture           improve_mode=rewrite
+  - 04-multitask                     improve_mode=rewrite
+  - 05-watchtime-censored            improve_mode=rewrite
+  - 06-hyperparameter-sweep          improve_mode=rewrite
+
+==============================================================================
+[1/5] 02-ranking-loss-plus-history  (improve_mode=rewrite)
+log -> /home/artur/agentml/aide_task/run_logs/campaign-20260831-235627-02-ranking-loss-plus-history.log
+==============================================================================

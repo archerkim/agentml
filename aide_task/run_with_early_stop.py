@@ -109,7 +109,18 @@ _cfgmod._get_next_logindex = _get_next_logindex_fixed
 # (503) запрос к модели может блокировать весь прогон на 10 минут за попытку - именно
 # так и произошло на смоук-тесте с gemini-3.7-flash. Патчим дефолтный timeout здесь,
 # а не трогаем сам site-packages/aideml, чтобы это пережило переустановку пакета.
-LLM_REQUEST_TIMEOUT_SEC = 180
+# Maximum-effort local Qwen reasoning takes tens of minutes for a full task prompt
+# plus a complete solution script - the reasoning trace alone runs to tens of
+# thousands of tokens at ~20 tok/s on this box.  This value must exceed the LONGEST
+# healthy generation, not the average: aide/backend/utils.py:backoff_create uses
+# @backoff.on_predicate with NO max_tries, so a timeout is not an error that
+# surfaces - it is swallowed and retried FOREVER.  Set too low, every attempt is
+# killed at the deadline and the step never completes (this is what produced the
+# ~1760s-per-step, zero-length-code steps in logs/5-kuairand-pure-run1).  Keep it
+# below the six-hour wall-clock cap but well above a real generation, and keep
+# OLLAMA_UPSTREAM_TIMEOUT_SEC in the proxy larger still, so the client - not the
+# proxy - owns the deadline.
+LLM_REQUEST_TIMEOUT_SEC = 3600
 import openai as _openai_module  # noqa: E402
 
 _orig_openai_init = _openai_module.OpenAI.__init__
@@ -179,6 +190,28 @@ def _patched_openrouter_query(system_message, user_message, func_spec=None, **mo
 
 
 _aide_backend_pkg.provider_to_query_func["openrouter"] = _patched_openrouter_query
+
+
+# aideml==0.2.2 (aide/backend/backend_openai.py) does this unconditionally:
+#     if "max_tokens" in filtered_kwargs:
+#         filtered_kwargs["max_output_tokens"] = filtered_kwargs.pop("max_tokens")
+# renaming the parameter for the OpenAI *Responses* API - and then, for a custom
+# base_url, sends it down the *chat completions* path, which has no such parameter:
+#     TypeError: Completions.create() got an unexpected keyword argument 'max_output_tokens'
+# journal2report() is the only caller that passes max_tokens (=4096), so this
+# crashes the final report EVERY run, after the search has already finished. Seen
+# at the very end of run 8: all results were safely on disk, but report.md was lost.
+# Dropping the cap is harmless here - the model alias's num_ctx already bounds the
+# generation, and the report is short.
+_ORIGINAL_OPENAI_QUERY = _aide_backend_pkg.provider_to_query_func["openai"]
+
+
+def _patched_openai_query(*args, **model_kwargs):
+    model_kwargs.pop("max_tokens", None)
+    return _ORIGINAL_OPENAI_QUERY(*args, **model_kwargs)
+
+
+_aide_backend_pkg.provider_to_query_func["openai"] = _patched_openai_query
 
 
 # КРИТИЧНЫЙ ПАТЧ, подтверждён эмпирически на реальном прогоне (aideml==0.2.2,
@@ -254,7 +287,7 @@ _Interpreter._run_session = _run_session
 import re
 import subprocess
 
-from aide.utils.metric import WorstMetricValue
+from aide.utils.metric import MetricValue, WorstMetricValue
 
 
 def setup_verify_workspace(cfg):
@@ -273,6 +306,76 @@ def setup_verify_workspace(cfg):
 
 
 _METRIC_RE = re.compile(r"primary[^0-9\-]{0,30}(-?[0-9]*\.?[0-9]+)", re.IGNORECASE)
+
+
+# ============================================================================
+# A malformed execution review must not kill the whole run
+# ============================================================================
+# aide/agent.py:parse_exec_result assumes the review query ALWAYS comes back as the
+# structured dict produced by review_func_spec's function call:
+#     if not isinstance(response["metric"], float):
+# But aide/backend/backend_openai.py falls back to `output = message.content` (a
+# plain string) whenever the model answers WITHOUT a tool call. A local reasoning
+# model does that: observed on run 6 at step 5 - `finish=stop, content_chars=0`,
+# 31569 tokens spent entirely on reasoning, then no tool call and no content. The
+# string "" then hits `response["metric"]` and raises
+#     TypeError: string indices must be integers, not 'str'
+# which propagates out of agent.step() and out of main(). That killed a run 1.5
+# hours in, and - because Interpreter's child process is spawned WITHOUT
+# daemon=True - Python's multiprocessing exit handler then blocked forever trying
+# to join it, so the run hung instead of even failing cleanly.
+#
+# description.md requires the opposite behaviour ("On a candidate error - log it,
+# roll back to the last valid checkpoint, continue with the next hypothesis. Do not
+# stop the entire run because of one failed candidate"). So: retry the review (the
+# failure is stochastic - the model simply didn't emit the tool call that time),
+# and if it still won't produce one, fall back to judging the candidate from its
+# own stdout rather than discarding the whole run.
+_ORIGINAL_PARSE_EXEC_RESULT = Agent.parse_exec_result
+
+REVIEW_RETRIES = 2
+
+
+def _parse_exec_result_robust(self, node, exec_result):
+    for attempt in range(REVIEW_RETRIES + 1):
+        try:
+            return _ORIGINAL_PARSE_EXEC_RESULT(self, node=node, exec_result=exec_result)
+        except (TypeError, KeyError) as exc:
+            print(f"  [review] model returned no usable structured review "
+                  f"({exc!r}) - attempt {attempt + 1}/{REVIEW_RETRIES + 1}")
+
+    # Every retry failed. Judge the candidate the same way verify_candidate() would:
+    # trust its own printed metric if it ran cleanly, otherwise mark it buggy (which
+    # makes it eligible for a debug step later, exactly like any other failure).
+    node.absorb_exec_result(exec_result)
+    term_out = "".join(exec_result.term_out or [])
+    matches = _METRIC_RE.findall(term_out)
+
+    if exec_result.exc_type is None and matches:
+        primary = float(matches[-1])
+        node.is_buggy = False
+        node.metric = MetricValue(primary, maximize=True)
+        node.analysis = (
+            "[HARNESS] The review model produced no structured verdict after "
+            f"{REVIEW_RETRIES + 1} attempts. The script itself ran without an "
+            f"exception and printed primary={primary:.4f}, so that value was read "
+            "directly from its stdout."
+        )
+        print(f"  [review] fell back to the script's own stdout: primary={primary:.4f}")
+    else:
+        node.is_buggy = True
+        node.metric = WorstMetricValue()
+        node.analysis = (
+            "[HARNESS] The review model produced no structured verdict after "
+            f"{REVIEW_RETRIES + 1} attempts, and the script "
+            + (f"raised {exec_result.exc_type}." if exec_result.exc_type
+               else "printed no 'primary' value.")
+            + " Treated as buggy so the search can debug or move past it."
+        )
+        print("  [review] no usable review and no usable stdout metric - marking buggy")
+
+
+Agent.parse_exec_result = _parse_exec_result_robust
 
 
 def verify_candidate(node, verify_dir, timeout_sec):
@@ -467,6 +570,46 @@ print("Saved ensemble submission to ./working/submission.csv successfully.")
 '''
 
 
+def _rescue_seed_node(seed_node, seed_result):
+    """Keep the seeded FM baseline usable even when the review model rejects it.
+
+    The seed is the organizers' reference implementation, not something the search
+    invented - if it executed cleanly and printed a `primary` value, it is by
+    definition not buggy. Observed on logs/5-kuairand-pure-run1: the review model
+    marked it buggy for "violating the HARD REQUIREMENT of multi-seed ensembling",
+    a policy judgement about the task description rather than an execution failure.
+    A buggy node is dropped from journal.good_nodes, so that verdict silently
+    removes the anchor the whole run is built around: it disappears from Memory and
+    _improve() can never pick it, which is exactly the "rewrite from scratch every
+    time" behaviour description.md seeds the baseline to prevent.
+
+    The metric is re-read from the script's own stdout rather than trusted from the
+    review, using the same last-match rule as verify_candidate().
+    """
+    if seed_result.exc_type is not None:
+        print(f"  baseline seed genuinely crashed ({seed_result.exc_type}) - leaving the review's verdict alone")
+        return
+
+    term_out = "".join(seed_result.term_out or [])
+    matches = _METRIC_RE.findall(term_out)
+    if not matches:
+        print("  baseline seed printed no 'primary' value - leaving the review's verdict alone")
+        return
+
+    primary = float(matches[-1])
+    if seed_node.is_buggy or seed_node.metric.value is None:
+        print(f"  baseline seed was marked buggy by the review model despite running "
+              f"cleanly and printing primary={primary:.4f} - restoring it as the search anchor")
+    seed_node.is_buggy = False
+    seed_node.metric = MetricValue(primary, maximize=True)
+    seed_node.analysis = (
+        (seed_node.analysis or "")
+        + f"\n[HARNESS] Reference FM baseline, executed cleanly; primary={primary:.4f} "
+          "read from its own stdout. Trusted as the run's starting point regardless of "
+          "the review model's verdict."
+    )
+
+
 def get_root(node):
     while node.parent is not None:
         node = node.parent
@@ -616,7 +759,15 @@ def _improve_diff(self, parent_node: Node) -> Node:
             system_message=prompt, user_message=None,
             model=self.acfg.code.model, temperature=self.acfg.code.temp,
         )
-        plan = _extract_text_up_to_code(completion_text) or ""
+        # extract_text_up_to_code() splits on the first ``` fence, but a
+        # SEARCH/REPLACE response has no fences at all - so it returned "" for every
+        # improve node, and journal.generate_summary() (the agent's own Memory) then
+        # showed a blank "Design:" line for exactly the steps whose reasoning matters
+        # most. Confirmed on run 8 step 7, which recorded an empty plan. Take the text
+        # before the first SEARCH block instead, falling back to the fence-based rule.
+        plan = completion_text.split("<<<<<<< SEARCH")[0].strip()
+        if not plan:
+            plan = _extract_text_up_to_code(completion_text) or ""
         new_code, error = _apply_search_replace(parent_node.code, completion_text)
         if new_code is not None:
             return Node(plan=plan, code=new_code, parent=parent_node)
@@ -634,6 +785,266 @@ def _improve_diff(self, parent_node: Node) -> Node:
 Agent._improve = _improve_diff
 
 
+# ============================================================================
+# FEATURE 7: Causal attribution - work out WHY a step moved the metric
+# ============================================================================
+# aideml's own review (review_func_spec) is a bug-detector plus a summary: its schema
+# asks for "a short summary (2-3 sentences) describing the empirical findings". What
+# it produces is descriptive, not causal. Verbatim from run 10 step 1:
+#   "The key improvement over the plain FM baseline is the addition of a `prev_video`
+#    field ... Seed-averaged validation primary is 0.6036"
+# - i.e. a restatement of the edit plus the number. It never asks why the number moved.
+#
+# That matters because journal.generate_summary() feeds exactly these analyses back as
+# the agent's Memory. So run 10 tried three ideas off the same parent and carried
+# forward three restatements, never a mechanism: prev_video gained +0.0021, while
+# making the valid-side history properly chronological LOST 0.0058 - a result that is
+# genuinely informative (the "collapsed" history was evidently acting as a stable
+# user-level prior rather than a recency signal), and nothing in the loop ever drew
+# that inference or used it to pick the next edit.
+#
+# This step adds one focused call per scored node: compare it to its parent, decide
+# whether the move is real against the measured noise floor, explain the MECHANISM,
+# and name the next experiment that mechanism implies. The result is appended to
+# node.analysis, so it flows into Memory through the existing path with no prompt
+# surgery, and is also persisted to lessons.jsonl for later runs.
+from aide.backend import FunctionSpec as _FunctionSpec  # noqa: E402
+
+# FM's seed-to-seed std on this task is 0.0008 (baseline_scores.json), so a delta
+# under ~0.0016 (2 sigma) is not distinguishable from reseeding luck. Telling the
+# model this number explicitly stops it inventing mechanisms for pure noise, which is
+# the main failure mode of self-reflection prompts.
+METRIC_NOISE_STD = 0.0008
+
+LESSONS_PATH = Path(__file__).parent / "lessons.jsonl"
+
+attribution_func_spec = _FunctionSpec(
+    name="submit_attribution",
+    json_schema={
+        "type": "object",
+        "properties": {
+            "verdict": {
+                "type": "string",
+                "enum": ["real_gain", "real_loss", "within_noise", "broken"],
+                "description": (
+                    "real_gain/real_loss only if |delta| is clearly larger than 2 standard "
+                    "deviations of seed noise; otherwise within_noise."
+                ),
+            },
+            "mechanism": {
+                "type": "string",
+                "description": (
+                    "WHY the metric moved, in terms of what the change did to the model's "
+                    "ranking behaviour - not a restatement of what was edited. E.g. 'the "
+                    "feature is constant within a user, so it cannot change within-user "
+                    "order and only acts through its cross with item-side fields'. If the "
+                    "verdict is within_noise, say what would have had to be true for it to "
+                    "matter, and say plainly that no mechanism is supported by this data."
+                ),
+            },
+            "transferable_lesson": {
+                "type": "string",
+                "description": (
+                    "One sentence a future attempt on this task should carry forward. Must "
+                    "be actionable and specific to this task, not generic ML advice."
+                ),
+            },
+            "next_experiment": {
+                "type": "string",
+                "description": (
+                    "The single most informative next edit given this mechanism, and what "
+                    "result would confirm or refute it."
+                ),
+            },
+        },
+        "required": ["verdict", "mechanism", "transferable_lesson", "next_experiment"],
+    },
+    description="Explain why this candidate's validation metric differed from its parent's.",
+)
+
+
+def reflect_on_node(agent, node, parent_node):
+    """Attribute a step's metric change to a mechanism; fold the result into Memory.
+
+    Returns the attribution dict, or None when there is nothing to attribute
+    (no parent, no metric, or the candidate crashed - aideml's own review already
+    proposes a fix in that case).
+    """
+    if parent_node is None or node.is_buggy:
+        return None
+    if node.metric is None or node.metric.value is None:
+        return None
+    if parent_node.metric is None or parent_node.metric.value is None:
+        return None
+
+    delta = node.metric.value - parent_node.metric.value
+    prompt = {
+        "Introduction": (
+            "You are analysing one controlled experiment in an automated ML search. A "
+            "single change was made to a working solution and the validation metric "
+            "moved. Your job is to explain WHY it moved - the mechanism - so the next "
+            "experiment is chosen on the basis of understanding rather than trial and "
+            "error. Do not restate what was edited; the edit is given to you below."
+        ),
+        "Task description": agent.task_desc,
+        "Measurement": (
+            f"Parent validation primary: {parent_node.metric.value:.4f}\n"
+            f"This candidate's validation primary: {node.metric.value:.4f}\n"
+            f"Delta: {delta:+.4f}\n"
+            f"Seed-to-seed noise on this task: std = {METRIC_NOISE_STD:.4f}, so anything "
+            f"within about +/-{2 * METRIC_NOISE_STD:.4f} is indistinguishable from luck.\n"
+            f"This delta is {abs(delta) / METRIC_NOISE_STD:.1f} standard deviations."
+        ),
+        "What was changed": node.plan or "(no plan recorded)",
+        "Parent solution": {"Code": _wrap_code(parent_node.code)},
+        "This candidate": {"Code": _wrap_code(node.code)},
+        "Execution output of this candidate": _wrap_code(node.term_out or "", lang=""),
+    }
+
+    try:
+        resp = _aide_query(
+            system_message=prompt, user_message=None,
+            func_spec=attribution_func_spec,
+            model=agent.acfg.feedback.model, temperature=agent.acfg.feedback.temp,
+        )
+    except Exception as exc:
+        print(f"  [reflect] attribution call failed ({exc!r}) - continuing without it")
+        return None
+    if not isinstance(resp, dict) or "mechanism" not in resp:
+        print("  [reflect] model returned no structured attribution - continuing without it")
+        return None
+
+    print(f"  [reflect] {resp.get('verdict')} ({delta:+.4f}): "
+          f"{str(resp.get('transferable_lesson'))[:150]}")
+
+    # Fold into the node's analysis so journal.generate_summary() carries it into the
+    # Memory section of every later prompt - no change needed to the improve prompts.
+    node.analysis = (node.analysis or "") + (
+        f"\n[WHY IT MOVED] verdict={resp.get('verdict')} (delta {delta:+.4f}, "
+        f"{abs(delta) / METRIC_NOISE_STD:.1f} sigma). "
+        f"Mechanism: {resp.get('mechanism')} "
+        f"Lesson: {resp.get('transferable_lesson')} "
+        f"Suggested next: {resp.get('next_experiment')}"
+    )
+
+    rec = dict(resp)
+    rec.update({"delta": round(delta, 5),
+                "parent_metric": parent_node.metric.value,
+                "node_metric": node.metric.value,
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")})
+    with open(LESSONS_PATH, "a") as fh:
+        fh.write(json.dumps(rec) + "\n")
+    return resp
+
+
+def load_lessons(max_entries=12):
+    """Cross-run causal memory: what previous runs concluded about WHY things moved."""
+    if not LESSONS_PATH.exists():
+        return ""
+    records = []
+    for line in LESSONS_PATH.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if r.get("verdict") in ("real_gain", "real_loss"):
+            records.append(r)
+    if not records:
+        return ""
+    lines = ["\n\n## Mechanisms established by previous runs\n",
+             "Each line is a conclusion a previous experiment reached about WHY a change "
+             "moved the metric, kept only where the effect was larger than seed noise. "
+             "Use these to choose the next change by reasoning rather than by guessing.\n"]
+    for r in records[-max_entries:]:
+        lines.append(f"- ({r['verdict']}, {r['delta']:+.4f}) {r.get('transferable_lesson')}")
+    return "\n".join(lines) + "\n"
+
+
+# ============================================================================
+# FEATURE 6: Merge step - let improvements COMPOUND
+# ============================================================================
+# Measured on run 10 (max effort, baseline lineage). Parent links were:
+#     step1 <- 0 (0.6036)   step2 <- 1 (0.6027)   step3 <- 1 (0.5978)   step4 <- 1 (0.6034)
+# Every attempt after step 1 branched off step 1 and was then discarded, because
+# search_policy() always returns get_best_node(). Three separate ideas were tried
+# and none accumulated. Worse, they were COMPLEMENTARY: step 2 added "last 3
+# positive videos", step 4 added "last positive author" - orthogonal features that
+# no node in the run ever contained together, even though Memory shows the agent
+# knew both scores (prompt grew 8196 -> 9708 tokens as their results accumulated).
+#
+# The cause is structural, not a lack of reasoning: _improve()'s prompt mandates
+# "a single actionable improvement... atomic so we can experimentally evaluate the
+# effect", so the reachable search space is exactly "parent + one small change".
+# This step deliberately suspends that constraint at the moment it costs the most -
+# when the plateau counter is about to end the run - and asks for one solution that
+# unions the distinct improvements of the top-K good candidates.
+MERGE_RESPONSE_FORMAT = {
+    "Response format": (
+        "Your response should be a brief outline (3-5 sentences) of which specific "
+        "improvements you are taking from which candidate and why, followed by a single "
+        "markdown code block (wrapped in ```) containing the COMPLETE merged solution. "
+        "There should be no additional headings or text."
+    )
+}
+
+
+def _merge_candidates(agent, journal, k=3):
+    """Ask for ONE solution combining the distinct improvements of the top-k good nodes.
+
+    Returns a Node (parent = best node, so the lineage stays intact) or None.
+    """
+    good = [n for n in journal.good_nodes
+            if n.metric is not None and n.metric.value is not None]
+    if len(good) < 2:
+        return None
+    ranked = sorted(good, key=lambda n: n.metric.value, reverse=True)[:k]
+
+    candidates = {}
+    for i, n in enumerate(ranked, 1):
+        candidates[f"Candidate {i} (validation primary {n.metric.value:.4f})"] = {
+            "What it changed": n.plan or "(no plan recorded)",
+            "Code": _wrap_code(n.code),
+        }
+
+    prompt = {
+        "Introduction": (
+            "You are a Kaggle grandmaster. Below are the best solutions found so far for "
+            "this task. Each one improved the baseline in a DIFFERENT way, but no single "
+            "solution contains all of those improvements at once - they were developed as "
+            "separate one-change-at-a-time experiments branching from a common parent. "
+            "Your job now is the opposite of an atomic edit: produce ONE solution that "
+            "combines their distinct, complementary improvements."
+        ),
+        "Task description": agent.task_desc,
+        "Candidates to combine": candidates,
+        "Instructions": {},
+    }
+    prompt["Instructions"] |= MERGE_RESPONSE_FORMAT
+    prompt["Instructions"] |= {
+        "Merge guideline": [
+            "Identify what each candidate changed relative to the others, then keep every "
+            "change that is likely to help and is not mutually exclusive with another.",
+            "This is explicitly NOT a single atomic edit - combining several improvements "
+            "at once is the entire point of this step.",
+            "Do not drop working functionality that a candidate already had (multi-seed "
+            "averaging, causal/split-aware feature construction, int-cast submission "
+            "columns, saving valid_scores.npy and test_scores.npy).",
+            "If two candidates changed the same thing incompatibly, pick the one with the "
+            "better validation primary and say why.",
+            "The result must be a single self-contained file that runs as-is.",
+        ],
+    }
+    prompt["Instructions"] |= agent._prompt_impl_guideline
+
+    plan, code = agent.plan_and_code_query(prompt)
+    if not code:
+        return None
+    return Node(plan="[MERGE] " + (plan or ""), code=code, parent=ranked[0])
+
+
 def main():
     if not os.getenv("OPENAI_API_KEY"):
         raise SystemExit(
@@ -646,13 +1057,43 @@ def main():
     ap.add_argument("--epsilon", type=float, default=0.002, help="порог значимого прироста primary")
     ap.add_argument("--patience", type=int, default=3, help="N - сколько подряд шагов без прироста > epsilon до останова")
     ap.add_argument("--wall_clock_sec", type=float, default=21600, help="хард-потолок по времени, сек (6ч по умолчанию)")
+    # Diversity / compounding controls (see FEATURE 6 and campaign.py).
+    ap.add_argument("--directive", type=str, default=None,
+                    help="путь к файлу с директивой этого прогона (какое НАПРАВЛЕНИЕ исследовать) "
+                         "либо сам текст. Дописывается в task_desc - так campaign.py заставляет "
+                         "разные прогоны идти в разные стороны вместо повторения одного и того же.")
+    ap.add_argument("--exp_name", type=str, default=None,
+                    help="переопределяет cfg.exp_name - чтобы прогоны кампании не сливались в один лог")
+    ap.add_argument("--max_merges", type=int, default=2,
+                    help="сколько раз за прогон разрешён merge-шаг (объединение лучших кандидатов). 0 - выключить")
+    ap.add_argument("--merge_topk", type=int, default=3,
+                    help="сколько лучших кандидатов подавать в merge-шаг")
+    ap.add_argument("--reflect", action="store_true", default=True,
+                    help="после каждого шага отдельным вызовом выяснять ПОЧЕМУ метрика сдвинулась (механизм), класть вывод в analysis узла -> в Memory следующего шага, и в lessons.jsonl между прогонами")
+    ap.add_argument("--no_reflect", dest="reflect", action="store_false")
+    ap.add_argument("--improve_mode", choices=["diff", "rewrite"], default="diff",
+                    help="diff - точечные SEARCH/REPLACE-патчи (надёжно, но структурно не может "
+                         "сменить архитектуру: из FM нельзя пропатчить DeepFM). rewrite - штатный "
+                         "_improve() из aideml, полная перезапись файла. ВАЖНО: rewrite тоже "
+                         "выставляет parent=улучшаемый узел, то есть узлов без родителя всё равно "
+                         "не появляется - меняется только размер допустимого шага.")
     ap.add_argument("--seed_baseline", type=str, default="./baseline_seed_code.py",
                      help="код официального FM baseline, засеивается как node 0 журнала перед стартом поиска "
                           "(чтобы _improve() мог реально строить на нём, а не только знать его число). "
                           "Пустая строка - не засеивать.")
     args = ap.parse_args()
 
-    cfg = prep_cfg(OmegaConf.load(args.config))
+    # diff-mode is the default (installed at import); restore aideml's own full-rewrite
+    # _improve() when a directive needs a change too large to express as a patch.
+    if args.improve_mode == "rewrite":
+        Agent._improve = _ORIGINAL_IMPROVE
+        print("improve_mode=rewrite: using aideml's full-rewrite _improve() "
+              "(parent is still set, so no orphan nodes)")
+
+    _raw_cfg = OmegaConf.load(args.config)
+    if args.exp_name:
+        _raw_cfg.exp_name = args.exp_name
+    cfg = prep_cfg(_raw_cfg)
     print(f'Starting run "{cfg.exp_name}" (early-stop: epsilon={args.epsilon}, patience={args.patience}, '
           f'wall_clock_sec={args.wall_clock_sec}, step_cap={cfg.agent.steps})')
 
@@ -662,10 +1103,29 @@ def main():
         task_desc = task_desc + format_findings_block(prior_findings)
         print(f"Injected {len(prior_findings)} prior-run findings into task_desc from {FINDINGS_PATH}")
 
+    lessons = load_lessons()
+    if lessons:
+        task_desc = task_desc + lessons
+        print(f"Injected causal lessons from prior runs ({LESSONS_PATH})")
+
     research_notes = load_research_notes()
     if research_notes:
         task_desc = task_desc + "\n\n## Research notes (literature findings)\n\n" + research_notes + "\n"
         print(f"Injected {len(research_notes)} chars of research notes into task_desc from {RESEARCH_NOTES_PATH}")
+
+    # Per-run directive. findings.jsonl tells every run what has ALREADY been tried;
+    # this tells THIS run where to go next. Without it, independent runs converge on
+    # the same idea - runs 9 and 10 both produced "FM + one history-derived field"
+    # despite being seeded identically and having the full findings file, because
+    # nothing distinguished one run's brief from another's.
+    if args.directive:
+        directive_path = Path(args.directive)
+        directive = directive_path.read_text() if directive_path.exists() else args.directive
+        task_desc = (task_desc
+                     + "\n\n## Directive for THIS run (overrides the generic priority order above)\n\n"
+                     + directive.strip() + "\n")
+        print(f"Injected run directive ({len(directive)} chars)"
+              + (f" from {directive_path}" if directive_path.exists() else " from --directive text"))
 
     print("Preparing agent workspace (copying and extracting files) ...")
     prep_agent_workspace(cfg)
@@ -699,6 +1159,7 @@ def main():
                 ),
             )
             agent.parse_exec_result(node=seed_node, exec_result=seed_result)
+            _rescue_seed_node(seed_node, seed_result)
             journal.append(seed_node)
             print(f"  baseline seed: is_buggy={seed_node.is_buggy} metric={seed_node.metric}")
         else:
@@ -711,6 +1172,16 @@ def main():
             shutil.rmtree(cfg.workspace_dir, ignore_errors=True)
 
     atexit.register(cleanup)
+
+    # Interpreter spawns its executor with Process(...) and NO daemon=True, so
+    # multiprocessing's own atexit handler tries to JOIN that child on shutdown.
+    # The child sits blocked on code_inq.get() forever, so any exception escaping
+    # the loop below leaves the run hung instead of exiting - which is exactly how
+    # run 6 ended: it raised at step 5 and then never died, holding its workspace
+    # and log dir open. atexit runs LIFO and multiprocessing registered its handler
+    # at import time (before this line), so registering here means we terminate the
+    # child FIRST, before anything tries to join it.
+    atexit.register(interpreter.cleanup_session)
 
     # В aideml==0.2.2 нет глобального journal.metric_maximize - LLM сообщает
     # направление per-node (lower_is_better в review_func_spec). Наша задача
@@ -729,8 +1200,40 @@ def main():
     stop_reason = None
     t_start = time.monotonic()
 
+    merges_done = 0
+
     while global_step < cfg.agent.steps:
+        # Fire the merge step just BEFORE the plateau rule would end the run: at that
+        # point several complementary one-change candidates exist and the ordinary
+        # atomic-edit loop has provably stopped finding gains, so the highest-value
+        # remaining move is to combine what already works rather than tweak it again.
+        # Retried at most --max_merges times so a merge that fails to beat the best
+        # cannot hold the run open indefinitely.
+        if (args.max_merges > 0 and merges_done < args.max_merges
+                and journal.get_best_node(only_good=True) is not None
+                and bad_steps >= args.patience - 1):
+            print(f"  merge step ({merges_done + 1}/{args.max_merges}): combining the "
+                  f"distinct improvements of the top candidates ...")
+            merges_done += 1
+            merged = _merge_candidates(agent, journal, k=args.merge_topk)
+            if merged is None:
+                print("  merge step skipped: fewer than 2 scored candidates to combine")
+            else:
+                exec_result = interpreter.run(merged.code, True)
+                agent.parse_exec_result(node=merged, exec_result=exec_result)
+                journal.append(merged)
+                save_run(cfg, journal)
+                global_step = len(journal)
+                print(f"  merge result: is_buggy={merged.is_buggy} metric={merged.metric}")
+
         agent.step(exec_callback=interpreter.run)
+
+        # Attribute this step's metric change to a mechanism BEFORE the next step is
+        # planned, so the conclusion is in Memory when the next edit is chosen.
+        if args.reflect and journal.nodes:
+            new_node = journal.nodes[-1]
+            reflect_on_node(agent, new_node, new_node.parent)
+
         save_run(cfg, journal)
         global_step = len(journal)
         elapsed = time.monotonic() - t_start

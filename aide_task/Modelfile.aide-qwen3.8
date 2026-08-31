@@ -1,0 +1,15 @@
+# Reuses the local Qwen 3.8 27B weights; it never pulls them again.
+#
+# Context sizing is NOT cosmetic here - it is what makes maximum reasoning effort
+# usable at all.  Measured on this box with the real AIDE draft prompt:
+#
+#   num_ctx 32768 -> prompt_tokens=7052, completion_tokens=25716, total=32768,
+#                    finish_reason="length", content_chars=0
+#
+# i.e. the model spent every remaining token on its reasoning trace and never got
+# to emit an answer, so AIDE's extract_code() saw an empty string and recorded a
+# zero-length candidate (logs/5-kuairand-pure-run1, steps 1 and 2).  At maximum
+# effort the reasoning alone wants well over 25K tokens, so the context has to fit
+# prompt + full reasoning + a complete solution script with room to spare.
+FROM qwen3.8:27b
+PARAMETER num_ctx 131072

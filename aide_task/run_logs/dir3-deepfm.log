@@ -1,0 +1,15 @@
+improve_mode=rewrite: using aideml's full-rewrite _improve() (parent is still set, so no orphan nodes)
+Starting run "16-camp-03-deepfm" (early-stop: epsilon=0.0005, patience=4, wall_clock_sec=10800.0, step_cap=50)
+Injected 8 prior-run findings into task_desc from /home/artur/agentml/aide_task/findings.jsonl
+Injected causal lessons from prior runs (/home/artur/agentml/aide_task/lessons.jsonl)
+Injected 6232 chars of research notes into task_desc from /home/artur/agentml/aide_task/research_notes.md
+Injected run directive (3047 chars) from directives/03-deepfm-architecture.md
+Preparing agent workspace (copying and extracting files) ...
+Seeding journal with official FM baseline from seed_from_directive1.py ...
+  baseline seed: is_buggy=False metric=Metric↑(0.6048)
+Verification workspace ready at /home/artur/agentml/aide_task/logs/16-camp-03-deepfm/_verify_workspace (re-checks every new-best candidate against valid.csv only)
+/home/artur/.venvs/agentml-aide/lib/python3.12/site-packages/aide/utils/tree_export.py:34: RuntimeWarning: invalid value encountered in divide
+  layout = (layout - layout.min(axis=0)) / (layout.max(axis=0) - layout.min(axis=0))
+  candidate for new best (primary=0.6048) - re-executing in isolation to verify...
+  verification: PASSED - verified: recomputed primary 0.6048 matches recorded 0.6048
+[step 2/50] best_so_far=0.6048 elapsed=237s | новый лучший результат (проверено)

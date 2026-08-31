@@ -13,6 +13,8 @@ aide_task/data/
 aide_task/logs/
 aide_task/workspaces/
 aide_task/verify_stack/
+aide_task/_step_eval/
+aide_task/_test_eval/
 
 # broken external symlink
 KuaiRand-Pure

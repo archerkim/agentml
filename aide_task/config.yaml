@@ -3,22 +3,27 @@
 # (aide/utils/config.py: AgentConfig) - у GitHub main есть поля (напр. metric_maximize),
 # которых в этой версии на PyPI ещё нет; ориентируйтесь на установленную версию, не на main.
 #
-# LLM-провайдер: NVIDIA (build.nvidia.com), модель nvidia/nemotron-3-ultra-550b-a55b.
+# LLM-провайдер: локальный Ollama, модель aide-qwen3.8:27b (Qwen 3.8 27B).
 # aideml==0.2.2 распознаёт провайдера только по паттернам "gpt-"/"o<N>"/"codex-",
 # "claude-", "gemini-" (aide/backend/__init__.py:determine_provider) -
-# "nvidia/nemotron-3-ultra-550b-a55b" ни под один не попадает, поэтому провайдер падает
+# "aide-qwen3.8:27b" ни под один не попадает, поэтому провайдер попадает
 # в ветку "если задан OPENAI_BASE_URL - используем backend_openai.py по обычному Chat
-# Completions API". run_with_early_stop.py сам выставляет
-# OPENAI_BASE_URL=https://integrate.api.nvidia.com/v1 при старте - здесь никакого поля
-# под base_url нет и не нужно.
+# Completions API". aide_task/.env задаёт локальный OpenAI-совместимый endpoint
+# sidecar'а; он направляет запросы в Ollama и принудительно выставляет
+# reasoning_effort=max. Не менять endpoint на прямой :11434/v1: тогда AIDE не передаст
+# этот параметр и Qwen будет работать с обычной глубиной рассуждений.
 #
-# (Раньше пробовали Z.ai напрямую - не было баланса; затем OpenRouter'овский
-# z-ai/glm-5.2:free - упёрлись в общий бесплатный пул, устойчивый 429 upstream.
-# Ключи от обоих оставлены закомментированными в .env на случай отката.)
+# Локальный alias использует уже импортированные веса qwen3.8:27b и задаёт runtime
+# context 131072 (см. Modelfile.aide-qwen3.8). 32K, стоявшие здесь раньше, НЕ работают
+# на maximum reasoning: замерено на реальном draft-промпте - prompt 7052 токенов,
+# completion 25716, total ровно 32768, finish_reason="length", content пустой. Модель
+# тратила весь остаток контекста на reasoning и не успевала выдать ответ, из-за чего
+# AIDE записывал кандидата с кодом нулевой длины (logs/5-kuairand-pure-run1, шаги 1-2).
+# 131072 умещается целиком в GPU (23 ГБ, 100% GPU на двух A5000).
 #
-# Единственное, что нужно сделать перед запуском - вставить ключ в aide_task/.env
-# (плейсхолдер OPENAI_API_KEY=...). run_with_early_stop.py сам подхватывает .env и
-# экспортирует ключ в окружение при старте.
+# Запускайте через ./run_kuairand.sh - он поднимает ollama_max_reasoning_proxy.py и,
+# что важнее, АКТИВИРУЕТ venv: verify_candidate() и ensemble-шаг вызывают `python3`
+# через PATH, и без активации это /usr/bin/python3 без pandas.
 
 data_dir: ./data
 desc_file: ./description.md
@@ -43,17 +48,18 @@ copy_data: True
 exp_name: kuairand-pure-run1
 
 exec:
-  # хард-кап на ОДНО выполнение кода агента. Референсный FM baseline тренируется
-  # ~17с/итерация на одном ядре; 900с даёт ~50x запас на более тяжёлые кандидаты
-  # (sequence-модели, multi-seed оценка внутри одного запуска и т.п.), не давая
-  # одному зависшему кандидату съесть весь бюджет прогона.
-  timeout: 900
+  # хард-кап на ОДНО выполнение кода агента. Поднято с 900 до 2700 после того, как
+  # 900с стали связывающим ограничением, а не страховкой: директивы требуют внутренних
+  # свипов по гиперпараметрам, и кандидаты убивались по таймауту ДО того, как успевали
+  # что-либо посчитать - directive 02 step 1 (9 обучений BPR) и directive 03 step 2
+  # (torch DeepFM на CPU). Это скрывало реальный результат за таймаутом.
+  timeout: 2700
   agent_file_name: runfile.py
   format_tb_ipython: False
 
 generate_report: True
 report:
-  model: nvidia/nemotron-3-ultra-550b-a55b
+  model: aide-qwen3.8:27b
   temp: 1.0
 
 agent:
@@ -75,17 +81,34 @@ agent:
   data_preview: True
 
   code:
-    model: nvidia/nemotron-3-ultra-550b-a55b   # по запросу пользователя, через build.nvidia.com
+    model: aide-qwen3.8:27b
     temp: 0.5
 
   feedback:
-    model: nvidia/nemotron-3-ultra-550b-a55b   # дешёвая/быстрая - только классификация traceback'ов
+    model: aide-qwen3.8:27b
     temp: 0.5
 
   search:
     max_debug_depth: 3
     debug_prob: 0.5
-    num_drafts: 5    # увеличено для теста ensemble-механизма: нужно несколько НЕЗАВИСИМЫХ
-                     # (разных lineage) кандидатов, следующих новому требованию сохранять
-                     # valid_scores.npy/test_scores.npy, иначе select_diverse_topk найдёт
-                     # <2 подходящих и ensemble-шаг просто пропустится
+    # 1 = НИКАКИХ черновиков с нуля: единственный узел без родителя - это засеянный
+    # FM baseline, всё остальное строится ОТ НЕГО.
+    #
+    # Механика (aide/agent.py:search_policy + journal.py:draft_nodes): draft_nodes -
+    # это узлы с parent is None, а seed-узел как раз такой, поэтому он сам считается
+    # за один черновик. Условие `len(draft_nodes) < num_drafts` при num_drafts=1
+    # ложно уже на первом шаге, так что _draft() не вызывается никогда; policy идёт
+    # в debug багованного листа либо в _improve(get_best_node()) - то есть правит
+    # baseline точечными SEARCH/REPLACE-патчами.
+    #
+    # Почему поменяли с 5: на прогонах 6-8 обязательные черновики съедали
+    # большую часть бюджета и почти все падали (KeyError/ValueError/IndexError -
+    # модель пишет фичи по несуществующим колонкам), лучший из них дал 0.5937
+    # против baseline 0.6015. За 8 шагов прогона 8 ровно ОДИН шаг дошёл до
+    # улучшения baseline. Теперь на это идут все шаги.
+    #
+    # Цена: ensemble-шаг в конце почти наверняка пропустится - select_diverse_topk
+    # требует >=2 РАЗНЫХ lineage, а теперь lineage один. Это осознанный размен:
+    # ансамбль из прошлого прогона всё равно дал 0.5937 (100% веса на один
+    # кандидат, второй бесполезен), т.е. терять почти нечего.
+    num_drafts: 1
